@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: telegram-test-bot
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BOT_MODE
+        value: polling
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: STORAGE_BACKEND
+        value: json
+      - key: STORAGE_FILE_PATH
+        value: /app/data/results

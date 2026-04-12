@@ -1,0 +1,12 @@
+{
+  "admins": [
+    {
+      "telegramId": 123456789,
+      "name": "Teacher One"
+    },
+    {
+      "telegramId": 987654321,
+      "name": "Teacher Two"
+    }
+  ]
+}
