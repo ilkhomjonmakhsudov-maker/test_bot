@@ -4,8 +4,17 @@ import { Telegraf, Context } from 'telegraf';
 import { UserSessionService, UserState } from './user-session.service';
 import { TeacherService } from '../teacher/teacher.service';
 import { TestSessionService } from '../session/session.service';
+import { Session } from '../session/interfaces/session.interface';
 import { ExcelService } from '../excel/excel.service';
 import { MessageBuilder } from './message-builder';
+
+/** Telegram orqali qabul qilinadigan maksimal Excel hajmi */
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+/** Telegram MarkdownV2 uchun maxsus belgilarni ekranlaydi */
+function escapeMd(text: string): string {
+  return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
+}
 
 @Injectable()
 export class BotService implements OnModuleInit, OnModuleDestroy {
@@ -68,13 +77,19 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.command('yangitest', (ctx) => this.handleNewTest(ctx));
     this.bot.command('javoblar', (ctx) => this.handleSetAnswers(ctx));
     this.bot.command('ball', (ctx) => this.handleSetBall(ctx));
+    this.bot.command('namuna', (ctx) => this.handleTemplate(ctx));
     this.bot.command('natijalar', (ctx) => this.handleResults(ctx));
-    this.bot.command('yakunla', (ctx) => this.handleEndTest(ctx));
+    this.bot.command('yakunla', (ctx) => this.handleStopTest(ctx));
+    this.bot.command('davom', (ctx) => this.handleResume(ctx));
+    this.bot.command('natijalarni_yubor', (ctx) => this.handleSendResults(ctx));
     this.bot.command('holat', (ctx) => this.handleStatus(ctx));
 
     // Talaba buyruqlari
     this.bot.command('qoshil', (ctx) => this.handleJoin(ctx));
     this.bot.command('yuborish', (ctx) => this.handleSubmit(ctx));
+
+    // Excel fayllar: kalit yoki baholangan natijalar
+    this.bot.on('document', (ctx) => this.handleDocument(ctx));
 
     // Matnli xabarlar uchun holatlar mashina
     this.bot.on('text', (ctx) => this.handleText(ctx));
@@ -319,7 +334,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } else {
       this.userSession.setState(userId, UserState.TEACHER_AWAITING_ANSWERS);
       await ctx.reply(
-        '📋 To\'g\'ri javoblarni kiriting:\nMisol: `1-A 2-C 3-B 4-D`\nVariantlar: A B C D E',
+        '📋 To\'g\'ri javoblarni kiriting:\n' +
+        'Misol: `1-A 2-C 3-B 4-D` (variantlar A–E)\n\n' +
+        '📊 Ochiq javobli savollar ham bo\'lsa, Excel fayl yuboring.\n' +
+        'Namuna olish uchun: /namuna',
         { parse_mode: 'Markdown' },
       );
     }
@@ -328,14 +346,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async processSetAnswers(ctx: Context, raw: string) {
     const userId = ctx.from!.id;
     try {
-      const answers = this.testSession.setAnswers(userId, raw);
-      const count = Object.keys(answers).length;
-      const preview = Object.entries(answers)
-        .sort(([a], [b]) => parseInt(a) - parseInt(b))
-        .map(([q, a]) => `${q}-${a}`)
-        .join(' ');
+      const questions = this.testSession.setAnswers(userId, raw);
       this.userSession.resetState(userId);
-      await this.md(ctx, MessageBuilder.answersSet(count, preview));
+      await this.md(
+        ctx,
+        MessageBuilder.answersSet(
+          Object.values(questions).sort((a, b) => a.number - b.number),
+          false,
+        ),
+      );
     } catch (e: any) {
       await ctx.reply(MessageBuilder.error(e.message));
     }
@@ -404,7 +423,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.md(ctx, MessageBuilder.sessionStatus(session));
+    await this.md(ctx, MessageBuilder.sessionStatus(session, this.testSession.countPending(session)));
   }
 
   // ─── O'qituvchi: /natijalar ───────────────────────────────────────────────────
@@ -425,9 +444,38 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     await this.md(ctx, MessageBuilder.resultsSummary(session));
   }
 
-  // ─── O'qituvchi: /yakunla ────────────────────────────────────────────────────
+  // ─── O'qituvchi: /namuna ─────────────────────────────────────────────────────
 
-  private async handleEndTest(ctx: Context) {
+  /** Excel kalit namunasini yuboradi */
+  private async handleTemplate(ctx: Context) {
+    if (!this.isTeacher(ctx.from!.id)) {
+      await ctx.reply('⛔ Bu buyruq faqat o\'qituvchilar uchun.');
+      return;
+    }
+
+    try {
+      const buffer = await this.excelService.generateKeyTemplate();
+      await ctx.replyWithDocument(
+        { source: buffer, filename: 'kalit_namuna.xlsx' },
+        {
+          caption:
+            '📄 Kalit namunasi.\n\n' +
+            'Ustunlar: savol | turi (variant / ochiq) | to\'g\'ri javob\n' +
+            'To\'ldirib, shu chatga qaytaring — bot kalitni o\'zi o\'qiydi.',
+        },
+      );
+    } catch (e: any) {
+      await ctx.reply(MessageBuilder.error(e.message));
+    }
+  }
+
+  // ─── O'qituvchi: /yakunla (1-qadam — topshirishni to'xtatish) ────────────────
+
+  /**
+   * Testni to'xtatadi va baholash faylini yuboradi.
+   * Sessiya O'CHIRILMAYDI — natijalar /natijalarni_yubor bilan yuboriladi.
+   */
+  private async handleStopTest(ctx: Context) {
     const userId = ctx.from!.id;
     if (!this.isTeacher(userId)) {
       await ctx.reply('⛔ Bu buyruq faqat o\'qituvchilar uchun.');
@@ -441,32 +489,134 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      if (session.students.size === 0) {
-        await ctx.reply('⚠️ Hali hech kim javob topshirmagan. Test baribir yakunlanadi.');
+      if (Object.keys(session.questions).length === 0) {
+        await ctx.reply(
+          '⚠️ Kalit kiritilmagan — testni yakunlab bo\'lmaydi.\n' +
+          'Avval /javoblar buyrug\'i bilan yoki Excel orqali kalitni kiriting.',
+        );
+        return;
       }
 
-      // Barcha talabalar ro'yxatini olish (sessiya o'chirilishidan oldin)
+      // Holatni GRADING ga o'tkazish: talabalar javob topshira olmaydi
+      this.testSession.startGrading(userId);
+
+      if (session.students.size === 0) {
+        await ctx.reply('⚠️ Hali hech kim javob topshirmagan.');
+      }
+
+      // Baholash faylini yuborish (ochiq javoblar bo'lmasa ham — natijalar ichida)
+      const buffer = await this.excelService.generateGradingWorkbook(session);
+      const safeName = this.safeFileName(session.testName);
+      const pending = this.testSession.countPending(session);
+
+      await ctx.replyWithDocument(
+        { source: buffer, filename: `${safeName}_baholash.xlsx` },
+        {
+          caption:
+            pending > 0
+              ? `📊 "${session.testName}" — baholash fayli. ${pending} ta ochiq javob tekshirishingizni kutmoqda.`
+              : `📊 "${session.testName}" — joriy natijalar.`,
+        },
+      );
+
+      await this.md(ctx, MessageBuilder.gradingStarted(session, pending));
+
+      // Talabalarga test to'xtaganini bildirish
+      await this.notifyStudents(
+        ctx,
+        session,
+        `⏹ *"${escapeMd(session.testName)}" testi yakunlandi\\.*\n\n` +
+        `Javoblaringiz qabul qilindi\\. Natijalar o\'qituvchi tekshiruvidan so\'ng yuboriladi\\.`,
+      );
+    } catch (e: any) {
+      await ctx.reply(MessageBuilder.error(e.message));
+    }
+  }
+
+  // ─── O'qituvchi: /davom ──────────────────────────────────────────────────────
+
+  /** Baholash bosqichidan qaytish — talabalar yana javob topshira oladi */
+  private async handleResume(ctx: Context) {
+    const userId = ctx.from!.id;
+    if (!this.isTeacher(userId)) {
+      await ctx.reply('⛔ Bu buyruq faqat o\'qituvchilar uchun.');
+      return;
+    }
+
+    try {
+      const session = this.testSession.resumeSubmissions(userId);
+      await this.md(ctx, MessageBuilder.resumed(session));
+
+      await this.notifyStudents(
+        ctx,
+        session,
+        `🟢 *"${escapeMd(session.testName)}" testi qayta ochildi\\.*\n\n` +
+        `Javoblaringizni qayta yuborishingiz mumkin\\.`,
+      );
+    } catch (e: any) {
+      await ctx.reply(MessageBuilder.error(e.message));
+    }
+  }
+
+  // ─── O'qituvchi: /natijalarni_yubor (oxirgi qadam) ──────────────────────────
+
+  /**
+   * Natijalarni talabalarga yuboradi, yakuniy Excelni beradi va sessiyani yopadi.
+   * "majburiy" argumenti bilan tekshirilmagan ochiq javoblar xato deb hisoblanadi.
+   */
+  private async handleSendResults(ctx: Context) {
+    const userId = ctx.from!.id;
+    if (!this.isTeacher(userId)) {
+      await ctx.reply('⛔ Bu buyruq faqat o\'qituvchilar uchun.');
+      return;
+    }
+
+    try {
+      const session = this.testSession.getSessionByTeacher(userId);
+      if (!session) {
+        await ctx.reply('Faol test sessiyasi yo\'q. /yangitest buyrug\'i bilan yangi test yarating.');
+        return;
+      }
+
+      if (session.status !== 'GRADING') {
+        await ctx.reply(
+          '⚠️ Test hali to\'xtatilmagan.\n' +
+          'Avval /yakunla buyrug\'i bilan topshirishni to\'xtating.',
+        );
+        return;
+      }
+
+      // Tekshirilmagan ochiq javoblar bormi?
+      const force = /^majburiy$/i.test(this.getArgs(ctx));
+      const pending = this.testSession.countPending(session);
+      if (pending > 0 && !force) {
+        await this.md(ctx, MessageBuilder.pendingBlocksSend(pending));
+        return;
+      }
+      if (pending > 0 && force) {
+        const resolved = this.testSession.forceResolvePending(userId);
+        await ctx.reply(`⚠️ ${resolved} ta tekshirilmagan javob xato deb belgilandi.`);
+      }
+
       const students = [...session.students.values()];
 
-      // Excel generatsiya qilish (ma'lumotlar o'chirilishidan oldin)
+      // Yakuniy Excel (ma'lumotlar o'chirilishidan oldin)
       let excelBuffer: Buffer | null = null;
       if (students.length > 0) {
         excelBuffer = await this.excelService.generateResultsBuffer(session);
       }
 
       // Sessiyani xotira va fayldan o'chirish
-      this.testSession.endSession(userId);
+      this.testSession.finishSession(userId);
 
-      // Excel faylini o'qituvchiga yuborish
       if (excelBuffer) {
-        const safeName = session.testName.replace(/[^a-zA-Z0-9_\-]/g, '_');
+        const safeName = this.safeFileName(session.testName);
         await ctx.replyWithDocument(
           { source: excelBuffer, filename: `${safeName}_natijalari.xlsx` },
           { caption: `📊 "${session.testName}" test natijalari` },
         );
       }
 
-      // O'qituvchiga umumiy xulosa yuborish
       await this.md(ctx, MessageBuilder.testEnded(session));
 
       // O'qituvchiga har bir talabaning batafsil javobi (sahifalangan)
@@ -495,6 +645,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
               `Talabaga xabar yuborib bo'lmadi (userId=${student.userId}, ism="${student.fullName}"): ${(err as Error).message}`,
             );
           }
+          // Talabani sessiyadan chiqarish
+          this.userSession.clearSession(student.userId);
         }
 
         if (sent < students.length) {
@@ -509,6 +661,127 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } catch (e: any) {
       await ctx.reply(MessageBuilder.error(e.message));
     }
+  }
+
+  // ─── Excel fayl qabul qilish ─────────────────────────────────────────────────
+
+  /**
+   * O'qituvchi yuborgan .xlsx fayl ikki xil bo'lishi mumkin:
+   * • sessiya ACTIVE  → kalit fayli (savol | turi | javob)
+   * • sessiya GRADING → baholangan fayl (ochiq javoblar 1/0)
+   */
+  private async handleDocument(ctx: Context) {
+    const userId = ctx.from!.id;
+    const doc: any = (ctx.message as any)?.document;
+    if (!doc) return;
+
+    if (!this.isTeacher(userId)) {
+      await ctx.reply('📎 Fayl qabul qilinmaydi. Javoblarni matn ko\'rinishida yuboring: /yuborish');
+      return;
+    }
+
+    const fileName: string = doc.file_name ?? '';
+    if (!/\.xlsx$/i.test(fileName)) {
+      if (/\.xls$/i.test(fileName)) {
+        await ctx.reply(
+          '❌ Eski .xls formati qo\'llab-quvvatlanmaydi.\n' +
+          'Excelda "Farqli saqlash → .xlsx" ni tanlab, qayta yuboring.',
+        );
+      } else {
+        await ctx.reply('❌ Faqat .xlsx fayllar qabul qilinadi.');
+      }
+      return;
+    }
+
+    if (doc.file_size && doc.file_size > MAX_FILE_BYTES) {
+      await ctx.reply(`❌ Fayl juda katta (maksimal ${MAX_FILE_BYTES / 1024 / 1024} MB).`);
+      return;
+    }
+
+    const session = this.testSession.getSessionByTeacher(userId);
+    if (!session) {
+      await ctx.reply(
+        'Faol test sessiyasi yo\'q. Avval /yangitest buyrug\'i bilan test yarating, ' +
+        'so\'ng kalit faylini yuboring.',
+      );
+      return;
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = await this.downloadFile(ctx, doc.file_id);
+    } catch (err) {
+      this.logger.error(`Fayl yuklab olishda xato: ${(err as Error).message}`);
+      await ctx.reply('❌ Faylni yuklab olishda xato yuz berdi. Qayta urinib ko\'ring.');
+      return;
+    }
+
+    if (session.status === 'GRADING') {
+      await this.processGradedFile(ctx, buffer);
+    } else {
+      await this.processKeyFile(ctx, buffer);
+    }
+  }
+
+  /** Kalit faylini o'qib, sessiyaga yozadi */
+  private async processKeyFile(ctx: Context, buffer: Buffer) {
+    const userId = ctx.from!.id;
+    try {
+      const questions = await this.excelService.parseAnswerKey(buffer);
+      this.testSession.setQuestions(userId, questions);
+      this.userSession.resetState(userId);
+      await this.md(ctx, MessageBuilder.answersSet(questions, true));
+    } catch (e: any) {
+      await ctx.reply(MessageBuilder.error(e.message));
+    }
+  }
+
+  /** Baholangan faylni o'qib, ochiq javoblarga baho qo'yadi */
+  private async processGradedFile(ctx: Context, buffer: Buffer) {
+    const userId = ctx.from!.id;
+    try {
+      const grades = await this.excelService.parseGradedWorkbook(buffer);
+      const applied = this.testSession.applyManualGrades(userId, grades);
+      const session = this.testSession.getSessionByTeacher(userId)!;
+      await this.md(
+        ctx,
+        MessageBuilder.gradesApplied(applied, this.testSession.countPending(session)),
+      );
+    } catch (e: any) {
+      await ctx.reply(MessageBuilder.error(e.message));
+    }
+  }
+
+  /** Telegramdan faylni yuklab oladi */
+  private async downloadFile(ctx: Context, fileId: string): Promise<Buffer> {
+    const link = await ctx.telegram.getFileLink(fileId);
+    const response = await fetch(link.toString());
+    if (!response.ok) {
+      throw new Error(`Telegram javobi: ${response.status}`);
+    }
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  // ─── Umumiy yordamchilar ─────────────────────────────────────────────────────
+
+  /** Sessiyadagi barcha talabalarga xabar yuboradi (MarkdownV2) */
+  private async notifyStudents(ctx: Context, session: Session, message: string) {
+    for (const student of session.students.values()) {
+      try {
+        await ctx.telegram.sendMessage(student.userId, message, {
+          parse_mode: 'MarkdownV2',
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Talabaga xabar yuborib bo'lmadi (userId=${student.userId}): ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  private safeFileName(name: string): string {
+    const safe = name.replace(/[^a-zA-Z0-9_\-]/g, '_').replace(/_+/g, '_');
+    return safe.replace(/^_|_$/g, '') || 'test';
   }
 
   // ─── Talaba: /qoshil ─────────────────────────────────────────────────────────
@@ -576,7 +849,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const raw = this.getArgs(ctx);
     if (!raw) {
       await ctx.reply(
-        'Foydalanish: `/yuborish 1-A 2-B 3-C ...`\nBarcha javoblarni bitta xabarda yuboring.',
+        'Foydalanish: `/yuborish 1-A 2-B 3-18/60 ...`\n' +
+        'Barcha javoblarni bitta xabarda yuboring.\n' +
+        'Javob ichida bo\'shliq bo\'lsa: `/yuborish 1-A | 2-18 / 60`',
         { parse_mode: 'Markdown' },
       );
       return;
@@ -598,7 +873,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         username,
         raw,
       );
-      await this.md(ctx, MessageBuilder.submissionResult(result));
+      const session = this.testSession.getSessionById(sessionId)!;
+      await this.md(ctx, MessageBuilder.submissionResult(result, session));
+      await this.md(ctx, MessageBuilder.submissionEcho(result, session));
     } catch (e: any) {
       await ctx.reply(MessageBuilder.error(e.message));
     }
@@ -633,11 +910,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           await ctx.reply('Ismingizni ro\'yxatdan o\'tkazish uchun /start yuboring.');
         } else if (us.joinedSessionId) {
           // Talaba sessiyaga qo'shilgan — javob formatiga o'xshash matn bo'lsa
-          if (/^\d+-[A-Ea-e]/i.test(text.trim())) {
+          // (ochiq javoblar ham: "1-18/60", "2. 20x")
+          if (/^\s*\d+\s*[-–—.):]/.test(text)) {
             await this.processSubmit(ctx, us.joinedSessionId, text);
           } else {
             await ctx.reply(
-              'Javoblarni yuborish uchun `/yuborish 1-A 2-B ...` buyrug\'ini ishlating.',
+              'Javoblarni yuborish uchun `/yuborish 1-A 2-18/60 ...` buyrug\'ini ishlating.\n' +
+              'Javob ichida bo\'shliq bo\'lsa: `1-A | 2-18 / 60`',
               { parse_mode: 'Markdown' },
             );
           }

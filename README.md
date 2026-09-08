@@ -17,6 +17,113 @@ A production-ready Telegram bot built with **NestJS + TypeScript** that lets tea
 
 ---
 
+## 📝 Test o'tkazish oqimi (Test workflow)
+
+### Savol turlari
+
+| Tur | Javob | Kim tekshiradi |
+|---|---|---|
+| **variant** | `A`–`E` harflaridan biri | Bot — avtomatik |
+| **ochiq** (open-ended) | Erkin matn: `18/60`, `20x`, `100` | O'qituvchi — Excel orqali tasdiqlaydi |
+
+### Kalitni kiritishning 2 usuli
+
+**1. Telegram xabari** — faqat variantli savollar uchun:
+
+```
+/javoblar 1-A 2-B 3-C 4-D
+```
+
+**2. Excel fayl** — variantli va ochiq savollar aralash bo'lsa.
+`/namuna` buyrug'i namuna faylni yuboradi. Ustunlar tartibi:
+
+| Savol | Turi | To'g'ri javob |
+|---|---|---|
+| 1 | variant | A |
+| 2 | variant | C |
+| 3 | ochiq | 18/60 |
+| 4 | ochiq | 20x |
+| 5 | *(bo'sh)* | B |
+
+- 1-ustun: savol raqami **yoki** savol matni (matn yozilsa raqam tartib bo'yicha beriladi)
+- 2-ustun bo'sh qoldirilsa: javob bitta harf bo'lsa `variant`, aks holda `ochiq` deb olinadi
+- Fayl shunchaki botga yuboriladi — alohida buyruq shart emas
+
+### Talaba javoblari
+
+```
+/yuborish 1-A 2-C 3-18/60 4-20x
+```
+
+Savol raqami bilan javob orasida `-`, `.`, `)` ishlatsa bo'ladi (`1-A`, `1. A`, `1) A`).
+
+**Javoblar orasida `|` ajratgichi.** Ochiq javob ichida bo'shliq bo'lsa yoki
+javob raqam bilan tugasa, javoblarni `|` bilan ajrating — shunda hech qanday
+chalkashlik qolmaydi:
+
+```
+/yuborish 1-A | 2-C | 3-18 / 60 | 4-20 x
+```
+
+Har bir javobni yangi qatorga yozish ham xuddi shunday ishlaydi:
+
+```
+1-A
+2-C
+3-18 / 60
+```
+
+Aralash ishlatsa ham bo'ladi: `1-A 2-C | 3-18 / 60`.
+
+`|` kalit kiritishda ham qabul qilinadi: `/javoblar 1-A | 2-B | 3-C`.
+
+> **Nega `|` kerak?** Bo'shliq bilan ajratilganda `3-18/60 4-20x` kabi matnda
+> bot qayerda javob tugab, qayerda yangi savol boshlanganini bo'shliqqa qarab
+> aniqlaydi. Javobning o'zida bo'shliq bo'lsa (`18 / 60`) bu chegara yo'qoladi —
+> `|` aynan shu holat uchun.
+
+### Testni yakunlash — 3 qadam
+
+Ochiq javoblar o'qituvchi tasdig'ini talab qilgani uchun test **bir bosqichda emas**,
+uch bosqichda yakunlanadi. Natijalar o'qituvchi ruxsatisiz talabalarga bormaydi.
+
+```
+1. /yakunla
+   ├─ talabalar javob topshirishi TO'XTAYDI
+   ├─ o'qituvchiga "baholash" Excel fayli yuboriladi
+   └─ sessiya O'CHIRILMAYDI (ma'lumotlar saqlanib turadi)
+
+2. O'qituvchi Excelni to'ldirib, botga qaytaradi
+   ├─ "Baholash" varag'ida har bir ochiq javob alohida qator
+   ├─ oxirgi ustunga 1 (to'g'ri) yoki 0 (xato)
+   ├─ bot taxminiy bahoni oldindan qo'yib beradi — tekshirib chiqish kifoya
+   └─ variantli savollar bu varaqda yo'q — ular allaqachon tekshirilgan
+
+3. /natijalarni_yubor
+   ├─ har bir talabaga shaxsiy natija yuboriladi
+   ├─ o'qituvchiga yakuniy Excel yuboriladi
+   └─ sessiya butunlay o'chiriladi
+```
+
+Qo'shimcha buyruqlar:
+
+- `/davom` — 1-qadamdan qaytish, talabalar yana javob topshira oladi
+- `/natijalarni_yubor majburiy` — tekshirilmagan ochiq javoblarni **xato** deb hisoblab yakunlash
+- `/holat` — sessiya qaysi bosqichda va nechta javob tekshirilmaganini ko'rsatadi
+
+### Baholash faylining ustunlari
+
+| Talaba | ID | Savol | Savol matni | To'g'ri javob | Talaba javobi | To'g'rimi? (1/0) |
+|---|---|---|---|---|---|---|
+| Ali Valiyev | 1 | 3 | | 18/60 | 18 / 60 | **1** |
+| Bek Karimov | 2 | 3 | | 18/60 | 19/60 | **0** |
+
+- **ID** ustunini o'zgartirmang — natijalar shu bo'yicha moslashtiriladi
+- Ustunlar joyi almashsa ham bot sarlavha nomlari bo'yicha topadi
+- `1/0` o'rniga `ha/yo'q`, `+/-`, `to'g'ri/xato`, `✅/❌` ham qabul qilinadi
+
+---
+
 ## 🏗️ Architecture
 
 ```
