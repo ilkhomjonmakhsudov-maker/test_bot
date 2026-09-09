@@ -1,7 +1,14 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Optional,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
+import { StatsService } from '../stats/stats.service';
 import {
   Session,
   ScoringRule,
@@ -41,7 +48,14 @@ export class TestSessionService implements OnModuleInit, OnModuleDestroy {
   private readonly ttlMs: number;
   private readonly dataDir: string;
 
-  constructor(private readonly config: ConfigService) {
+  /**
+   * `stats` ixtiyoriy: testlarda xizmat to'g'ridan-to'g'ri yaratiladi va
+   * statistika yozilmaydi.
+   */
+  constructor(
+    private readonly config: ConfigService,
+    @Optional() private readonly stats?: StatsService,
+  ) {
     const ttlMinutes = this.config.get<number>('app.sessionTtlMinutes', 0);
     this.ttlMs = ttlMinutes > 0 ? ttlMinutes * 60 * 1000 : 0;
     this.dataDir = path.resolve(
@@ -88,6 +102,7 @@ export class TestSessionService implements OnModuleInit, OnModuleDestroy {
     this.scheduleTtl(session);
     this.persistSession(session);
 
+    this.stats?.recordCreated();
     this.logger.log(`Sessiya yaratildi: ${sessionId} — "${testName}" (o'qituvchi: ${teacherId})`);
     return session;
   }
@@ -404,6 +419,8 @@ export class TestSessionService implements OnModuleInit, OnModuleDestroy {
    */
   finishSession(teacherId: number): Session {
     const session = this.requireSession(teacherId);
+
+    this.stats?.recordCompleted(session);
 
     this.deleteSessionFile(session.sessionId);
     this.deleteSession(teacherId);

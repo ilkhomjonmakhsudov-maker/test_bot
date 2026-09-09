@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Boshqaruv paneli</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg:      var(--tg-theme-bg-color, #ffffff);
+    --card:    var(--tg-theme-secondary-bg-color, #f1f3f5);
+    --text:    var(--tg-theme-text-color, #16202b);
+    --muted:   var(--tg-theme-hint-color, #6e7c87);
+    --link:    var(--tg-theme-link-color, #2f6fa8);
+    --btn:     var(--tg-theme-button-color, #2f6fa8);
+    --btn-txt: var(--tg-theme-button-text-color, #ffffff);
+    --ok:#1f7a1f; --ok-bg:#d7f0d7;
+    --bad:#b3261e; --bad-bg:#f8d0d0;
+    --wait:#8a6100; --wait-bg:#fff2cc;
+    --line: color-mix(in srgb, var(--text) 12%, transparent);
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding:0 0 88px;
+  }
+  h1,h2,h3 { margin:0; font-weight:600; }
+  h1 { font-size:1.15rem; }
+  h2 { font-size:.95rem; }
+  .muted { color:var(--muted); }
+  .mono  { font-family:ui-monospace, "SF Mono", Menlo, monospace; }
+
+  header { padding:14px 16px 10px; display:flex; flex-direction:column; gap:3px; }
+  .sub { font-size:.82rem; color:var(--muted); }
+
+  nav {
+    display:flex; gap:6px; overflow-x:auto; padding:4px 16px 10px;
+    border-bottom:1px solid var(--line); -webkit-overflow-scrolling:touch;
+  }
+  nav button {
+    flex:0 0 auto; border:none; border-radius:16px; padding:6px 13px;
+    background:var(--card); color:var(--text); font-size:.85rem; cursor:pointer;
+  }
+  nav button[aria-selected="true"] { background:var(--btn); color:var(--btn-txt); }
+
+  main { padding:14px 16px; display:flex; flex-direction:column; gap:12px; }
+  .card {
+    background:var(--card); border-radius:11px; padding:13px 14px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .row { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+  .row .v { font-variant-numeric:tabular-nums; }
+
+  .pill {
+    display:inline-block; font-size:.72rem; padding:2px 8px; border-radius:20px;
+    font-weight:600;
+  }
+  .p-active { background:var(--ok-bg); color:var(--ok); }
+  .p-grading{ background:var(--wait-bg); color:var(--wait); }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(92px,1fr)); gap:8px; }
+  .tile { background:var(--bg); border-radius:9px; padding:9px 10px; }
+  .tile .n { font-size:1.32rem; font-weight:600; font-variant-numeric:tabular-nums; }
+  .tile .l { font-size:.72rem; color:var(--muted); }
+
+  button.act {
+    border:none; border-radius:9px; padding:11px 14px; font-size:.9rem;
+    font-weight:600; background:var(--btn); color:var(--btn-txt); cursor:pointer;
+    width:100%;
+  }
+  button.act.ghost { background:var(--bg); color:var(--text); border:1px solid var(--line); }
+  button.act.good  { background:var(--ok);  color:#fff; }
+  button.act.bad   { background:var(--bad); color:#fff; }
+  button.act:disabled { opacity:.45; }
+  .btn-row { display:flex; gap:8px; }
+  .btn-row > * { flex:1; }
+
+  ol.list, ul.list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1px; }
+  .item {
+    display:flex; justify-content:space-between; gap:10px; align-items:center;
+    padding:9px 0; border-bottom:1px solid var(--line);
+  }
+  .item:last-child { border-bottom:none; }
+  .item .name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .score { font-variant-numeric:tabular-nums; font-weight:600; white-space:nowrap; }
+
+  .q { display:flex; align-items:center; gap:9px; padding:8px 0; border-bottom:1px solid var(--line); }
+  .q:last-child { border-bottom:none; }
+  .q .no { width:26px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .q .ans { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .q .type {
+    font-size:.7rem; padding:2px 7px; border-radius:12px; background:var(--bg);
+    border:1px solid var(--line); cursor:pointer; white-space:nowrap;
+  }
+
+  .answer-box {
+    background:var(--bg); border-radius:9px; padding:10px 12px;
+    overflow-wrap:anywhere;
+  }
+  .answer-box .l { font-size:.72rem; color:var(--muted); margin-bottom:2px; }
+
+  .empty { text-align:center; color:var(--muted); padding:26px 10px; font-size:.9rem; }
+  .err {
+    background:var(--bad-bg); color:var(--bad); border-radius:9px;
+    padding:10px 12px; font-size:.87rem;
+  }
+  .toast {
+    position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
+    background:var(--text); color:var(--bg); padding:9px 16px; border-radius:20px;
+    font-size:.85rem; opacity:0; pointer-events:none; transition:opacity .18s;
+    max-width:88%; text-align:center;
+  }
+  .toast.on { opacity:.94; }
+  @media (prefers-reduced-motion: reduce) { .toast { transition:none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Boshqaruv paneli</h1>
+  <span class="sub" id="subtitle">Yuklanmoqda…</span>
+</header>
+<nav id="tabs"></nav>
+<main id="view"><div class="empty">Yuklanmoqda…</div></main>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  var initData = (tg && tg.initData) || '';
+  var state = null;
+  var tab = 'dash';
+  var busy = false;
+
+  var view    = document.getElementById('view');
+  var tabsEl  = document.getElementById('tabs');
+  var titleEl = document.getElementById('title');
+  var subEl   = document.getElementById('subtitle');
+  var toastEl = document.getElementById('toast');
+
+  // ── Yordamchilar ──────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+    });
+  }
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('on');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { toastEl.classList.remove('on'); }, 2200);
+  }
+  function haptic(type) {
+    if (tg && tg.HapticFeedback) {
+      try { tg.HapticFeedback.notificationOccurred(type); } catch (e) {}
+    }
+  }
+  function post(path, body) {
+    body = body || {};
+    body.initData = initData;
+    return fetch('/panel/api/' + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (!r.ok) throw new Error(data.message || ('Xato ' + r.status));
+        return data;
+      });
+    });
+  }
+
+  // ── Yuklash ───────────────────────────────────────────────────────────────
+  function load() {
+    return post('state').then(apply).catch(fail);
+  }
+  function act(action, params) {
+    if (busy) return;
+    busy = true;
+    post('action', Object.assign({ action: action }, params || {}))
+      .then(function (next) { apply(next); haptic('success'); })
+      .catch(function (e) { toast(e.message); haptic('error'); })
+      .then(function () { busy = false; });
+  }
+  function apply(next) {
+    state = next;
+    render();
+  }
+  function fail(e) {
+    view.innerHTML = '<div class="err">' + esc(e.message) + '</div>';
+    subEl.textContent = '';
+  }
+
+  // ── Chizish ───────────────────────────────────────────────────────────────
+  function render() {
+    var s = state.dashboard.session;
+    titleEl.textContent = s ? s.testName : 'Boshqaruv paneli';
+    subEl.textContent = s
+      ? s.sessionId + ' · ' + s.status
+      : state.user.name + ' · faol sessiya yo‘q';
+
+    var tabs = [['dash','Umumiy']];
+    if (s) {
+      tabs.push(['res','Natijalar']);
+      tabs.push(['key','Kalit']);
+      if (s.pending > 0) tabs.push(['grade','Baholash (' + s.pending + ')']);
+    }
+    if (state.role === 'super') tabs.push(['sa','Admin']);
+    if (!tabs.some(function (t) { return t[0] === tab; })) tab = 'dash';
+
+    tabsEl.innerHTML = tabs.map(function (t) {
+      return '<button data-tab="' + t[0] + '" aria-selected="' +
+        (t[0] === tab) + '">' + esc(t[1]) + '</button>';
+    }).join('');
+
+    view.innerHTML =
+      tab === 'dash'  ? viewDash()
+      : tab === 'res' ? viewResults()
+      : tab === 'key' ? viewKey()
+      : tab === 'grade' ? viewGrade()
+      : viewSuper();
+  }
+
+  function viewDash() {
+    var s = state.dashboard.session;
+    if (!s) {
+      return '<div class="empty">Faol test sessiyangiz yo‘q.<br>' +
+             'Telegramda /yangitest buyrug‘i bilan boshlang.</div>';
+    }
+    var pill = s.status === 'ACTIVE'
+      ? '<span class="pill p-active">ACTIVE</span>'
+      : '<span class="pill p-grading">GRADING</span>';
+
+    var html =
+      '<div class="card">' +
+        '<div class="row"><h2>' + esc(s.testName) + '</h2>' + pill + '</div>' +
+        '<div class="sub mono">' + esc(s.sessionId) + '</div>' +
+        '<div class="grid">' +
+          tile(s.students, 'Talaba') +
+          tile(s.questions, 'Savol') +
+          tile(s.openQuestions, 'Ochiq') +
+          tile(s.pending, 'Kutilmoqda') +
+        '</div>' +
+        '<div class="row muted"><span>Ball</span><span class="v">+' +
+          s.scoring.pointsPerCorrect + ' / −' + s.scoring.pointsPerWrong +
+        '</span></div>' +
+      '</div>';
+
+    if (s.questions === 0) {
+      html += '<div class="err">Kalit kiritilmagan. Telegramda /javoblar yuboring.</div>';
+    }
+
+    html += '<div class="card"><div class="btn-row">';
+    if (s.status === 'ACTIVE') {
+      html += '<button class="act" data-act="stop">⏹ Yakunlash</button>';
+    } else {
+      html += '<button class="act ghost" data-act="resume">▶️ Davom</button>';
+    }
+    html += '</div>';
+    if (s.status === 'GRADING') {
+      html += '<div class="sub">Natijalarni yuborish Telegram panelida: /natijalarni_yubor</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function tile(n, label) {
+    return '<div class="tile"><div class="n">' + n + '</div><div class="l">' +
+           esc(label) + '</div></div>';
+  }
+
+  function viewResults() {
+    var rows = state.standings;
+    if (!rows.length) return '<div class="empty">Hali hech kim javob topshirmagan.</div>';
+
+    return '<div class="card"><ol class="list">' + rows.map(function (r, i) {
+      var pct = r.maxScore > 0 ? Math.round((r.score / r.maxScore) * 100) : 0;
+      var wait = r.pendingCount > 0 ? ' ⏳' : '';
+      return '<li class="item"><span class="name">' + (i + 1) + '. ' +
+             esc(r.fullName) + wait + '</span><span class="score">' +
+             r.score + '/' + r.maxScore + ' · ' + pct + '%</span></li>';
+    }).join('') + '</ol></div>';
+  }
+
+  function viewKey() {
+    var key = state.key;
+    if (!key.length) return '<div class="empty">Kalit kiritilmagan.</div>';
+
+    return '<div class="card">' + key.map(function (q) {
+      return '<div class="q">' +
+        '<span class="no">' + q.number + '</span>' +
+        '<span class="ans">' + esc(q.answer) +
+          (q.text ? ' <span class="muted">— ' + esc(q.text) + '</span>' : '') +
+        '</span>' +
+        '<button class="type" data-toggle="' + q.number + '">' +
+          (q.type === 'open' ? '✍️ ochiq' : '🔘 variant') +
+        '</button>' +
+      '</div>';
+    }).join('') + '<div class="sub">Turini almashtirish uchun yorliqni bosing.</div></div>';
+  }
+
+  function viewGrade() {
+    var queue = state.pending;
+    if (!queue.length) {
+      return '<div class="empty">✅ Barcha ochiq javoblar baholandi.</div>';
+    }
+    var it = queue[0];
+    return '<div class="card">' +
+      '<div class="row"><h2>' + esc(it.studentName) + '</h2>' +
+        '<span class="muted">' + queue.length + ' ta qoldi</span></div>' +
+      '<div class="sub">' + it.question + '-savol' +
+        (it.questionText ? ': ' + esc(it.questionText) : '') + '</div>' +
+      '<div class="answer-box"><div class="l">Talaba javobi</div>' +
+        '<strong>' + esc(it.given) + '</strong></div>' +
+      '<div class="answer-box"><div class="l">To‘g‘ri javob</div>' +
+        esc(it.expected) + '</div>' +
+      (it.guess ? '<div class="sub">🤖 Bot: javob mos keladi</div>' : '') +
+      '<div class="btn-row">' +
+        '<button class="act good" data-grade="1">✅ To‘g‘ri</button>' +
+        '<button class="act bad"  data-grade="0">❌ Xato</button>' +
+      '</div>' +
+      '<button class="act ghost" data-act="acceptGuesses">' +
+        '🤖 Bot taxminini hammasiga qo‘llash</button>' +
+    '</div>';
+  }
+
+  function viewSuper() {
+    var sa = state.superAdmin;
+    if (!sa) return '<div class="empty">Ruxsat yo‘q.</div>';
+
+    var html = '<div class="card"><h2>Statistika</h2><div class="grid">' +
+      tile(sa.stats.totalSessions, 'Yakunlangan') +
+      tile(sa.activeSessions, 'Faol') +
+      tile(sa.stats.totalStudents, 'Talaba') +
+      tile(sa.teachers.length, 'O‘qituvchi') +
+    '</div></div>';
+
+    html += '<div class="card"><h2>Faol sessiyalar</h2>';
+    if (!sa.sessions.length) {
+      html += '<div class="sub">Hozircha faol sessiya yo‘q.</div>';
+    } else {
+      html += sa.sessions.map(function (s) {
+        var pill = s.status === 'ACTIVE'
+          ? '<span class="pill p-active">ACTIVE</span>'
+          : '<span class="pill p-grading">GRADING</span>';
+        return '<div class="q"><span class="ans"><strong>' + esc(s.sessionId) +
+          '</strong> ' + pill + '<br><span class="sub">' + esc(s.testName) +
+          ' · ' + esc(s.teacherName) + ' · 👥 ' + s.students +
+          (s.pending ? ' · ⏳ ' + s.pending : '') + '</span></span>' +
+          '<button class="type" data-force="' +
+            (s.status === 'ACTIVE' ? 'forceStop' : 'forceResume') +
+            '" data-sid="' + esc(s.sessionId) + '">' +
+            (s.status === 'ACTIVE' ? '⏹' : '▶️') +
+          '</button></div>';
+      }).join('');
+    }
+    html += '</div>';
+
+    html += '<div class="card"><h2>O‘qituvchilar</h2>' +
+      (sa.teachers.length
+        ? sa.teachers.map(function (t) {
+            return '<div class="item"><span class="name">' +
+              (t.hasSession ? '🟢 ' : '⚪️ ') + esc(t.name) +
+              '</span><span class="mono sub">' + t.telegramId + '</span></div>';
+          }).join('')
+        : '<div class="sub">Ro‘yxat bo‘sh.</div>') +
+      '<div class="sub">Qo‘shish/o‘chirish Telegramda: /oqituvchi_qosh</div></div>';
+
+    return html;
+  }
+
+  // ── Hodisalar ─────────────────────────────────────────────────────────────
+  tabsEl.addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-tab]');
+    if (!b) return;
+    tab = b.dataset.tab;
+    render();
+  });
+
+  view.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-act],[data-grade],[data-toggle],[data-force]');
+    if (!el) return;
+
+    if (el.dataset.act) return act(el.dataset.act);
+    if (el.dataset.toggle) return act('toggleType', { question: Number(el.dataset.toggle) });
+    if (el.dataset.force) {
+      return act(el.dataset.force, { sessionId: el.dataset.sid });
+    }
+    if (el.dataset.grade) {
+      var it = state.pending[0];
+      if (!it) return;
+      return act('grade', {
+        studentId: it.studentId,
+        question: it.question,
+        correct: el.dataset.grade === '1'
+      });
+    }
+  });
+
+  if (!initData) {
+    fail(new Error('Bu sahifa Telegram ichida ochilishi kerak.'));
+  } else {
+    load();
+  }
+})();
+</script>
+</body>
+</html>

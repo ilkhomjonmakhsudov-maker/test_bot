@@ -2,6 +2,8 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { Telegraf, Context } from 'telegraf';
 import { UserSessionService, UserState } from './user-session.service';
+import { PanelService, PanelView } from './panel.service';
+import { AdminService } from '../admin/admin.service';
 import {
   Lang,
   detectLang,
@@ -40,6 +42,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly teacherService: TeacherService,
     private readonly testSession: TestSessionService,
     private readonly excelService: ExcelService,
+    private readonly panel: PanelService,
+    private readonly admin: AdminService,
   ) {
     const token = this.config.get<string>('app.telegram.token');
     if (!token) throw new Error('TELEGRAM_BOT_TOKEN .env faylida belgilanmagan');
@@ -63,7 +67,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    this.bot.stop('SIGTERM');
+    try {
+      this.bot.stop('SIGTERM');
+    } catch (err) {
+      // Bot ishga tushmagan bo'lsa (masalan token noto'g'ri) — stop() xato
+      // beradi; bu o'chirishni to'xtatmasligi kerak.
+      this.logger.warn(`Botni to'xtatishda xato: ${(err as Error).message}`);
+    }
   }
 
   getBot(): Telegraf {
@@ -78,6 +88,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.command('yordam', (ctx) => this.handleHelp(ctx));
     this.bot.command('bekor', (ctx) => this.handleCancel(ctx));
     this.bot.command('til', (ctx) => this.handleLanguage(ctx));
+    this.bot.command('panel', (ctx) => this.handlePanel(ctx));
     this.bot.command('javob_format', (ctx) => this.handleSubmitFormat(ctx));
 
     // Super admin buyruqlari
@@ -101,6 +112,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.command('qoshil', (ctx) => this.handleJoin(ctx));
     this.bot.command('yuborish', (ctx) => this.handleSubmit(ctx));
 
+    // Panel tugmalari
+    this.bot.on('callback_query', (ctx) => this.handleCallback(ctx));
+
     // Excel fayllar: kalit yoki baholangan natijalar
     this.bot.on('document', (ctx) => this.handleDocument(ctx));
 
@@ -110,6 +124,32 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.catch((err, ctx) => {
       this.logger.error(`Xato update ${ctx.update.update_id}:`, err);
     });
+  }
+
+  // ─── Veb panel uchun xabarlar (ctx bo'lmaganda) ──────────────────────────────
+
+  /**
+   * Sessiyadagi barcha talabalarga xabar. Mini App HTTP so'rovidan
+   * chaqiriladi — u yerda Telegraf konteksti yo'q, shuning uchun bot
+   * to'g'ridan-to'g'ri ishlatiladi.
+   */
+  async announceToSession(session: Session, message: string): Promise<void> {
+    for (const student of session.students.values()) {
+      await this.notifyUser(student.userId, message);
+    }
+  }
+
+  /** Bitta foydalanuvchiga xabar; bloklagan bo'lsa jim o'tkazib yuboriladi */
+  async notifyUser(userId: number, message: string): Promise<void> {
+    try {
+      await this.bot.telegram.sendMessage(userId, message, {
+        parse_mode: 'MarkdownV2',
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Xabar yuborib bo'lmadi (userId=${userId}): ${(err as Error).message}`,
+      );
+    }
   }
 
   // ─── Yordamchi metodlar ───────────────────────────────────────────────────────
@@ -186,6 +226,263 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   /** Javob yuborish formatlari. Til: /javob_format en */
   private async handleSubmitFormat(ctx: Context) {
     await this.md(ctx, submitFormatHelp(this.langOf(ctx, this.getArgs(ctx))));
+  }
+
+  // ─── /panel ───────────────────────────────────────────────────────────────────
+
+  /** Inline tugmali boshqaruv paneli */
+  private async handlePanel(ctx: Context) {
+    const userId = ctx.from!.id;
+    if (!this.admin.isTeacher(userId)) {
+      await ctx.reply('⛔ Bu buyruq faqat o\'qituvchilar va adminlar uchun.');
+      return;
+    }
+    await this.showPanel(ctx, this.panel.home(this.admin.dashboard(userId)));
+  }
+
+  /** Yangi xabar sifatida yuboradi */
+  private async showPanel(ctx: Context, view: PanelView) {
+    await ctx.reply(view.text, {
+      parse_mode: 'MarkdownV2',
+      reply_markup: view.keyboard,
+    });
+  }
+
+  /**
+   * Mavjud xabarni almashtiradi — panel bitta xabar ichida "yashaydi",
+   * chatni tugmali xabarlar bilan to'ldirmaydi.
+   */
+  private async editPanel(ctx: Context, view: PanelView) {
+    try {
+      await ctx.editMessageText(view.text, {
+        parse_mode: 'MarkdownV2',
+        reply_markup: view.keyboard,
+      });
+    } catch (err) {
+      // "message is not modified" — foydalanuvchi bir tugmani ikki marta bosgan
+      const message = (err as Error).message ?? '';
+      if (!/not modified/i.test(message)) {
+        this.logger.warn(`Panelni yangilab bo'lmadi: ${message}`);
+        await this.showPanel(ctx, view);
+      }
+    }
+  }
+
+  // ─── Panel tugmalari ──────────────────────────────────────────────────────────
+
+  private async handleCallback(ctx: Context) {
+    const data = (ctx.callbackQuery as any)?.data as string | undefined;
+    const userId = ctx.from!.id;
+
+    if (!data || !data.startsWith('p:')) {
+      await ctx.answerCbQuery();
+      return;
+    }
+
+    if (!this.admin.isTeacher(userId)) {
+      await ctx.answerCbQuery('⛔ Ruxsat yo\'q', { show_alert: true });
+      return;
+    }
+
+    try {
+      await this.routeCallback(ctx, userId, data.slice(2));
+    } catch (e: any) {
+      this.logger.warn(`Panel amali xato (${data}): ${e.message}`);
+      await ctx.answerCbQuery(e.message.slice(0, 190), { show_alert: true });
+    }
+  }
+
+  /** `data` — "p:" prefiksisiz */
+  private async routeCallback(ctx: Context, userId: number, data: string) {
+    const parts = data.split(':');
+
+    switch (parts[0]) {
+      // ── Bosh sahifa ──────────────────────────────────────────────────────
+      case 'home':
+        await ctx.answerCbQuery();
+        return this.editPanel(ctx, this.panel.home(this.admin.dashboard(userId)));
+
+      case 'res': {
+        await ctx.answerCbQuery();
+        const session = this.admin.requireSession(userId);
+        return this.editPanel(
+          ctx,
+          this.panel.results(this.admin.standings(userId), this.admin.overview(session)),
+        );
+      }
+
+      case 'key': {
+        await ctx.answerCbQuery();
+        const session = this.admin.requireSession(userId);
+        return this.editPanel(
+          ctx,
+          this.panel.keyView(this.admin.keyListing(userId), this.admin.overview(session)),
+        );
+      }
+
+      // ── Savol turini almashtirish ────────────────────────────────────────
+      case 'kt': {
+        const question = parseInt(parts[1], 10);
+        const updated = this.admin.toggleQuestionType(userId, question);
+        await ctx.answerCbQuery(
+          `${question}-savol: ${updated.type === 'open' ? 'ochiq' : 'variantli'}`,
+        );
+        const session = this.admin.requireSession(userId);
+        return this.editPanel(
+          ctx,
+          this.panel.keyView(this.admin.keyListing(userId), this.admin.overview(session)),
+        );
+      }
+
+      // ── Ochiq javoblarni baholash ────────────────────────────────────────
+      case 'grade':
+        await ctx.answerCbQuery();
+        return this.showNextPending(ctx, userId);
+
+      case 'g': {
+        const studentId = parseInt(parts[1], 10);
+        const question = parseInt(parts[2], 10);
+        const correct = parts[3] === '1';
+        this.admin.gradeOne(userId, studentId, question, correct);
+        await ctx.answerCbQuery(correct ? '✅ To\'g\'ri' : '❌ Xato');
+        return this.showNextPending(ctx, userId);
+      }
+
+      case 'ga': {
+        const correct = parts[1] === '1';
+        const count = this.admin.gradeAllRemaining(userId, correct);
+        await ctx.answerCbQuery(`${count} ta javob belgilandi`);
+        return this.showNextPending(ctx, userId);
+      }
+
+      case 'gq': {
+        const count = this.admin.acceptGuesses(userId);
+        await ctx.answerCbQuery(`🤖 ${count} ta javob bot taxmini bo'yicha belgilandi`);
+        return this.showNextPending(ctx, userId);
+      }
+
+      // ── Sessiya hayoti ───────────────────────────────────────────────────
+      case 'stop':
+        await ctx.answerCbQuery('Yakunlanmoqda...');
+        await this.stopTest(ctx, userId);
+        return this.showPanel(ctx, this.panel.home(this.admin.dashboard(userId)));
+
+      case 'resume':
+        await ctx.answerCbQuery('Qayta ochilmoqda...');
+        await this.resumeTest(ctx, userId);
+        return this.showPanel(ctx, this.panel.home(this.admin.dashboard(userId)));
+
+      case 'send': {
+        const session = this.admin.requireSession(userId);
+        const pending = this.testSession.countPending(session);
+        if (pending > 0) {
+          await ctx.answerCbQuery(
+            `⏳ ${pending} ta javob tekshirilmagan. Avval ularni baholang.`,
+            { show_alert: true },
+          );
+          return this.showNextPending(ctx, userId);
+        }
+        await ctx.answerCbQuery('Yuborilmoqda...');
+        return this.sendResults(ctx, userId, false);
+      }
+
+      case 'ball':
+        await ctx.answerCbQuery();
+        this.userSession.setState(userId, UserState.TEACHER_AWAITING_SCORING);
+        return ctx.reply(
+          '⚙️ Yangi baholash tizimini yuboring.\n' +
+          'Misol: `1` yoki `1 0.25` (to\'g\'ri ball, xato uchun jarima)',
+          { parse_mode: 'Markdown' },
+        );
+
+      // ── Super admin ──────────────────────────────────────────────────────
+      case 'sa':
+        return this.routeSuperAdmin(ctx, userId, parts.slice(1));
+
+      default:
+        await ctx.answerCbQuery();
+        return;
+    }
+  }
+
+  private async routeSuperAdmin(ctx: Context, userId: number, parts: string[]) {
+    this.admin.assertSuperAdmin(userId);
+
+    switch (parts[0]) {
+      case undefined:
+        await ctx.answerCbQuery();
+        return this.editPanel(
+          ctx,
+          this.panel.superHome(
+            this.admin.activeSessionCount(),
+            this.admin.teacherList().length,
+          ),
+        );
+
+      case 's':
+        await ctx.answerCbQuery();
+        return this.editPanel(ctx, this.panel.allSessions(this.admin.allSessions()));
+
+      case 't':
+        await ctx.answerCbQuery();
+        return this.editPanel(ctx, this.panel.teacherList(this.admin.teacherList()));
+
+      case 'st':
+        await ctx.answerCbQuery();
+        return this.editPanel(
+          ctx,
+          this.panel.statistics(this.admin.statistics(), this.admin.activeSessionCount()),
+        );
+
+      // Boshqa o'qituvchining sessiyasini to'xtatish / ochish
+      case 'x':
+      case 'o': {
+        const sessionId = parts[1];
+        const overview =
+          parts[0] === 'x'
+            ? this.admin.forceStop(sessionId)
+            : this.admin.forceResume(sessionId);
+
+        await ctx.answerCbQuery(
+          parts[0] === 'x' ? `⏹ ${sessionId} to'xtatildi` : `▶️ ${sessionId} ochildi`,
+        );
+
+        // Egasiga va talabalarga xabar berish
+        const session = this.testSession.getSessionById(sessionId);
+        if (session) {
+          const notice =
+            parts[0] === 'x'
+              ? `⏹ *"${escapeMd(session.testName)}" testi administrator tomonidan to'xtatildi\.*`
+              : `🟢 *"${escapeMd(session.testName)}" testi administrator tomonidan qayta ochildi\.*`;
+          await this.notifyStudents(ctx, session, notice);
+          try {
+            await ctx.telegram.sendMessage(overview.teacherId, notice, {
+              parse_mode: 'MarkdownV2',
+            });
+          } catch {
+            // O'qituvchi botni bloklagan bo'lishi mumkin
+          }
+        }
+
+        return this.editPanel(ctx, this.panel.allSessions(this.admin.allSessions()));
+      }
+
+      default:
+        await ctx.answerCbQuery();
+        return;
+    }
+  }
+
+  /** Navbatdagi tekshirilmagan javobni ko'rsatadi, tugagach — bosh sahifa */
+  private async showNextPending(ctx: Context, userId: number) {
+    const queue = this.admin.pendingQueue(userId);
+    const session = this.admin.requireSession(userId);
+
+    if (queue.length === 0) {
+      return this.editPanel(ctx, this.panel.gradingDone(this.admin.overview(session)));
+    }
+
+    return this.editPanel(ctx, this.panel.gradeCard(queue[0], queue.length));
   }
 
   // ─── /start ───────────────────────────────────────────────────────────────────
@@ -553,7 +850,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       await ctx.reply('⛔ Bu buyruq faqat o\'qituvchilar uchun.');
       return;
     }
+    await this.stopTest(ctx, userId);
+  }
 
+  /** /yakunla va panel tugmasi uchun umumiy amal */
+  private async stopTest(ctx: Context, userId: number) {
     try {
       const session = this.testSession.getSessionByTeacher(userId);
       if (!session) {
@@ -614,7 +915,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       await ctx.reply('⛔ Bu buyruq faqat o\'qituvchilar uchun.');
       return;
     }
+    await this.resumeTest(ctx, userId);
+  }
 
+  /** /davom va panel tugmasi uchun umumiy amal */
+  private async resumeTest(ctx: Context, userId: number) {
     try {
       const session = this.testSession.resumeSubmissions(userId);
       await this.md(ctx, MessageBuilder.resumed(session));
@@ -642,7 +947,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       await ctx.reply('⛔ Bu buyruq faqat o\'qituvchilar uchun.');
       return;
     }
+    await this.sendResults(ctx, userId, /^majburiy$/i.test(this.getArgs(ctx)));
+  }
 
+  /** /natijalarni_yubor va panel tugmasi uchun umumiy amal */
+  private async sendResults(ctx: Context, userId: number, force: boolean) {
     try {
       const session = this.testSession.getSessionByTeacher(userId);
       if (!session) {
@@ -659,7 +968,6 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
 
       // Tekshirilmagan ochiq javoblar bormi?
-      const force = /^majburiy$/i.test(this.getArgs(ctx));
       const pending = this.testSession.countPending(session);
       if (pending > 0 && !force) {
         await this.md(ctx, MessageBuilder.pendingBlocksSend(pending));

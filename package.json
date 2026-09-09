@@ -5,7 +5,7 @@
   "author": "",
   "license": "MIT",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && cp -r src/public dist/public",
     "start": "node dist/main",
     "start:dev": "ts-node -r tsconfig-paths/register src/main.ts",
     "start:debug": "ts-node -r tsconfig-paths/register src/main.ts --debug",

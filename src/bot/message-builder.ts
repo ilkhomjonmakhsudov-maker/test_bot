@@ -81,6 +81,7 @@ export class MessageBuilder {
     return (
       `👋 *Xush kelibsiz, ${escMd(name)}\\!*\n\n` +
       `Siz o'qituvchi sifatida ro'yxatdan o'tgansiz\\. Buyruqlar:\n\n` +
+      `/panel — Boshqaruv paneli \\(tugmalar\\)\n` +
       `/yangitest — Yangi test sessiyasini boshlash\n` +
       `/javoblar — To'g'ri javoblarni kiritish \\(matn yoki Excel\\)\n` +
       `/namuna — Excel kalit namunasini olish\n` +
@@ -97,6 +98,7 @@ export class MessageBuilder {
   static teacherHelp(): string {
     return (
       `📖 *O'qituvchi Buyruqlari*\n\n` +
+      `/panel — Boshqaruv paneli: natijalar, kalit, baholash\n` +
       `/yangitest \\[nom\\] — Yangi test sessiyasini boshlash\n` +
       `/javoblar \\[1\\-A 2\\-B\\.\\.\\.\\] — Kalitni matn orqali belgilash\n` +
       `/namuna — Excel kalit namunasi \\(ochiq savollar uchun\\)\n` +

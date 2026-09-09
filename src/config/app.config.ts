@@ -13,6 +13,21 @@ export default registerAs('app', () => ({
 
   adminsFilePath: process.env.ADMINS_FILE_PATH || './admins.json',
 
+  /** Statistika fayli — yakunlangan testlar hisobi */
+  statsFilePath: process.env.STATS_FILE_PATH || './data/stats.json',
+
+  /**
+   * Telegram Mini App uchun ochiq HTTPS manzil (masalan
+   * https://bot.example.com). Bo'sh bo'lsa panelda veb tugmasi
+   * ko'rsatilmaydi — Telegram web_app tugmasi HTTPS talab qiladi.
+   */
+  publicUrl: (
+    process.env.PUBLIC_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    process.env.WEBHOOK_URL ||
+    ''
+  ).replace(/\/+$/, ''),
+
   superAdminIds: (process.env.SUPER_ADMIN_IDS || '')
     .split(',')
     .map((id) => id.trim())

@@ -5,6 +5,7 @@ import { BotModule } from './bot/bot.module';
 import { SessionModule } from './session/session.module';
 import { TeacherModule } from './teacher/teacher.module';
 import { ExcelModule } from './excel/excel.module';
+import { StatsModule } from './stats/stats.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { ExcelModule } from './excel/excel.module';
       load: [appConfig],
       envFilePath: '.env',
     }),
+    StatsModule,
     TeacherModule,
     SessionModule,
     ExcelModule,
