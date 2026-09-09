@@ -5,6 +5,15 @@ import * as path from 'path';
 import { TestSessionService } from './session.service';
 import { ExcelService } from '../excel/excel.service';
 import { MessageBuilder } from '../bot/message-builder';
+import {
+  LANGS,
+  Lang,
+  normalizeLang,
+  detectLang,
+  keyFormatHelp,
+  submitFormatHelp,
+  languagePrompt,
+} from '../bot/i18n';
 import { QuestionKey } from './interfaces/session.interface';
 
 /**
@@ -76,9 +85,82 @@ describe('Kalitni kiritish', () => {
     expect(questions[3].answer).toBe('C');
   });
 
-  it('matn orqali ochiq javob kiritilsa, Excelga yo\'naltiradi', () => {
+  it('qisqa yozuvda ochiq javobni rad etadi va ustunli yozuvni ko\'rsatadi', () => {
     sessions.createSession(TEACHER, 'Test');
-    expect(() => sessions.setAnswers(TEACHER, '1-A 2-18/60')).toThrow(/Excel/);
+    expect(() => sessions.setAnswers(TEACHER, '1-A 2-18/60')).toThrow(/ochiq \| 18\/60/);
+  });
+
+  it('ustunli yozuvda ochiq savolni qabul qiladi', () => {
+    sessions.createSession(TEACHER, 'Test');
+    const questions = sessions.setAnswers(
+      TEACHER,
+      '1 | variant | A\n2 | ochiq | 18/60 | Suvning qaynash harorati',
+    );
+
+    expect(questions[1]).toEqual({ number: 1, type: 'variant', answer: 'A', text: undefined });
+    expect(questions[2]).toEqual({
+      number: 2,
+      type: 'open',
+      answer: '18/60',
+      text: 'Suvning qaynash harorati',
+    });
+  });
+
+  it('ustunli yozuvda javob keyingi qatorga yopishib ketmaydi', () => {
+    sessions.createSession(TEACHER, 'Test');
+    // Yopuvchi quvursiz yozilgan qator — ilgari 2-savol butunlay yo'qolardi
+    const questions = sessions.setAnswers(TEACHER, '1 | ochiq | 18/60\n2 | variant | C');
+
+    expect(Object.keys(questions)).toHaveLength(2);
+    expect(questions[1].answer).toBe('18/60');
+    expect(questions[2].answer).toBe('C');
+  });
+
+  it('ustunli yozuvda ochiq javob bo\'shliqli bo\'lishi mumkin', () => {
+    sessions.createSession(TEACHER, 'Test');
+    const questions = sessions.setAnswers(TEACHER, '1 | ochiq | tez oqim');
+
+    expect(questions[1].answer).toBe('tez oqim');
+  });
+
+  it('turi bo\'sh qoldirilsa javobning shaklidan aniqlaydi', () => {
+    sessions.createSession(TEACHER, 'Test');
+    const questions = sessions.setAnswers(TEACHER, '1 || B\n2 || 18/60');
+
+    expect(questions[1].type).toBe('variant');
+    expect(questions[2].type).toBe('open');
+  });
+
+  it('eski "1-|ochiq|8/20|" yozuvi ham ishlaydi', () => {
+    sessions.createSession(TEACHER, 'Test');
+    const questions = sessions.setAnswers(TEACHER, '1-|ochiq|8/20|\n2-|variant|B|');
+
+    expect(questions[1]).toMatchObject({ type: 'open', answer: '8/20' });
+    expect(questions[2]).toMatchObject({ type: 'variant', answer: 'B' });
+  });
+
+  it('ustunli va qisqa yozuvni aralashtirib yozishga ruxsat beradi', () => {
+    sessions.createSession(TEACHER, 'Test');
+    const questions = sessions.setAnswers(TEACHER, '1-A 2-B\n3 | ochiq | 18/60');
+
+    expect(Object.keys(questions)).toHaveLength(3);
+    expect(questions[3].type).toBe('open');
+  });
+
+  it('ustunli yozuvda variantli savolga harf bo\'lmagan javobni rad etadi', () => {
+    sessions.createSession(TEACHER, 'Test');
+    expect(() => sessions.setAnswers(TEACHER, '1 | variant | 18/60')).toThrow(/A–E/);
+  });
+
+  it('ustunli yozuvda javobsiz qatorni rad etadi', () => {
+    sessions.createSession(TEACHER, 'Test');
+    expect(() => sessions.setAnswers(TEACHER, '1 | ochiq |')).toThrow(/javobi yozilmagan/);
+  });
+
+  it('ustun ko\'p bo\'lsa rad etadi', () => {
+    sessions.createSession(TEACHER, 'Test');
+    expect(() => sessions.setAnswers(TEACHER, '1 | ochiq | 18/60 | matn | ortiqcha'))
+      .toThrow(/ustun ko'p/);
   });
 
   it('Exceldan aralash turdagi savollarni o\'qiydi', async () => {
@@ -529,6 +611,19 @@ describe('Telegram xabarlari (MarkdownV2)', () => {
     }
   });
 
+  it('uch tildagi format yordamlari ekranlangan va chegarada', () => {
+    for (const lang of LANGS) {
+      const messages: Record<string, string> = {
+        [`kalit_${lang}`]: keyFormatHelp(lang),
+        [`javob_${lang}`]: submitFormatHelp(lang),
+      };
+      for (const [name, text] of Object.entries(messages)) {
+        expect({ name, bad: unescaped(text) }).toEqual({ name, bad: [] });
+        expect(text.length).toBeLessThan(4096);
+      }
+    }
+  });
+
   it('ko\'p talabali natijalarni sahifalarga bo\'ladi', () => {
     const sid = sessions.createSession(TEACHER, 'Katta test').sessionId;
     sessions.setQuestions(TEACHER, MIXED);
@@ -539,5 +634,53 @@ describe('Telegram xabarlari (MarkdownV2)', () => {
     const pages = MessageBuilder.teacherDetailedBreakdown(sessions.getSessionById(sid)!);
     expect(pages.length).toBeGreaterThan(1);
     pages.forEach((page) => expect(page.length).toBeLessThan(4096));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Til tanlash', () => {
+  it('til nomlarining turli yozuvlarini tushunadi', () => {
+    expect(normalizeLang('uz')).toBe('uz');
+    expect(normalizeLang('UZ')).toBe('uz');
+    expect(normalizeLang("o'zbekcha")).toBe('uz');
+    expect(normalizeLang('ru')).toBe('ru');
+    expect(normalizeLang('Русский')).toBe('ru');
+    expect(normalizeLang('english')).toBe('en');
+  });
+
+  it('tanilmagan tilni rad etadi', () => {
+    expect(normalizeLang('de')).toBeNull();
+    expect(normalizeLang('')).toBeNull();
+  });
+
+  it('Telegram til kodidan aniqlaydi, tanilmasa o\'zbekcha', () => {
+    expect(detectLang('ru')).toBe('ru');
+    expect(detectLang('en-US')).toBe('en');
+    expect(detectLang('de')).toBe('uz');
+    expect(detectLang(undefined)).toBe('uz');
+  });
+
+  it('har bir til uchun ikkala yordam matni ham bo\'sh emas', () => {
+    for (const lang of LANGS) {
+      expect(keyFormatHelp(lang).length).toBeGreaterThan(200);
+      expect(submitFormatHelp(lang).length).toBeGreaterThan(200);
+    }
+  });
+
+  it('tur so\'zlari kod bloklarida tarjima qilinmagan', () => {
+    // Ajratgich faqat lotincha tur so'zlarini taniydi
+    for (const lang of LANGS) {
+      const text = keyFormatHelp(lang);
+      expect(text).toContain('1 | variant | A');
+      expect(text).toContain('2 | ochiq | 18/60');
+    }
+  });
+
+  it('til ro\'yxatida joriy til belgilanadi', () => {
+    const prompt = languagePrompt('ru' as Lang);
+    expect(prompt).toContain('/til ru');
+    expect(prompt).toMatch(/\/til ru — Русский ✅/);
+    expect(prompt).toContain('/til en');
   });
 });

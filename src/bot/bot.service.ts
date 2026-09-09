@@ -2,6 +2,16 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { Telegraf, Context } from 'telegraf';
 import { UserSessionService, UserState } from './user-session.service';
+import {
+  Lang,
+  detectLang,
+  normalizeLang,
+  keyFormatHelp,
+  submitFormatHelp,
+  languagePrompt,
+  languageSet,
+  languageUnknown,
+} from './i18n';
 import { TeacherService } from '../teacher/teacher.service';
 import { TestSessionService } from '../session/session.service';
 import { Session } from '../session/interfaces/session.interface';
@@ -67,6 +77,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.start((ctx) => this.handleStart(ctx));
     this.bot.command('yordam', (ctx) => this.handleHelp(ctx));
     this.bot.command('bekor', (ctx) => this.handleCancel(ctx));
+    this.bot.command('til', (ctx) => this.handleLanguage(ctx));
+    this.bot.command('javob_format', (ctx) => this.handleSubmitFormat(ctx));
 
     // Super admin buyruqlari
     this.bot.command('oqituvchi_qosh', (ctx) => this.handleAddTeacher(ctx));
@@ -78,6 +90,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.command('javoblar', (ctx) => this.handleSetAnswers(ctx));
     this.bot.command('ball', (ctx) => this.handleSetBall(ctx));
     this.bot.command('namuna', (ctx) => this.handleTemplate(ctx));
+    this.bot.command('kalit_format', (ctx) => this.handleKeyFormat(ctx));
     this.bot.command('natijalar', (ctx) => this.handleResults(ctx));
     this.bot.command('yakunla', (ctx) => this.handleStopTest(ctx));
     this.bot.command('davom', (ctx) => this.handleResume(ctx));
@@ -118,6 +131,61 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private getArgs(ctx: Context): string {
     const text: string = (ctx.message as any)?.text ?? '';
     return text.replace(/^\/\S+\s*/, '').trim();
+  }
+
+  /**
+   * Yordam matnlari tili: buyruq argumenti → tanlangan til →
+   * Telegram profilidagi til → o'zbekcha.
+   */
+  private langOf(ctx: Context, arg?: string): Lang {
+    const requested = arg ? normalizeLang(arg) : null;
+    if (requested) return requested;
+
+    const stored = this.userSession.getLang(ctx.from!.id);
+    if (stored) return stored;
+
+    return detectLang(ctx.from?.language_code);
+  }
+
+  // ─── /til ─────────────────────────────────────────────────────────────────────
+
+  /** Yordam matnlari tilini tanlaydi: /til uz | ru | en */
+  private async handleLanguage(ctx: Context) {
+    const userId = ctx.from!.id;
+    const arg = this.getArgs(ctx);
+    const current = this.langOf(ctx);
+
+    if (!arg) {
+      await ctx.reply(languagePrompt(current));
+      return;
+    }
+
+    const chosen = normalizeLang(arg);
+    if (!chosen) {
+      await ctx.reply(languageUnknown(current, arg));
+      return;
+    }
+
+    this.userSession.setLang(userId, chosen);
+    await ctx.reply(languageSet(chosen));
+  }
+
+  // ─── /kalit_format (o'qituvchi) ───────────────────────────────────────────────
+
+  /** Kalit yozuv formatlari. Til: /kalit_format ru */
+  private async handleKeyFormat(ctx: Context) {
+    if (!this.isTeacher(ctx.from!.id)) {
+      await ctx.reply('⛔ Bu buyruq faqat o\'qituvchilar uchun.');
+      return;
+    }
+    await this.md(ctx, keyFormatHelp(this.langOf(ctx, this.getArgs(ctx))));
+  }
+
+  // ─── /javob_format (talaba) ───────────────────────────────────────────────────
+
+  /** Javob yuborish formatlari. Til: /javob_format en */
+  private async handleSubmitFormat(ctx: Context) {
+    await this.md(ctx, submitFormatHelp(this.langOf(ctx, this.getArgs(ctx))));
   }
 
   // ─── /start ───────────────────────────────────────────────────────────────────
@@ -334,10 +402,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } else {
       this.userSession.setState(userId, UserState.TEACHER_AWAITING_ANSWERS);
       await ctx.reply(
-        '📋 To\'g\'ri javoblarni kiriting:\n' +
-        'Misol: `1-A 2-C 3-B 4-D` (variantlar A–E)\n\n' +
-        '📊 Ochiq javobli savollar ham bo\'lsa, Excel fayl yuboring.\n' +
-        'Namuna olish uchun: /namuna',
+        '📋 To\'g\'ri javoblarni kiriting.\n\n' +
+        'Faqat variantli savollar bo\'lsa:\n' +
+        '`1-A 2-C 3-B 4-D` (variantlar A–E)\n\n' +
+        'Ochiq javobli savollar ham bo\'lsa, har bir savolni alohida qatorda:\n' +
+        '`1 | variant | A`\n' +
+        '`2 | ochiq | 18/60 | Savol matni`\n' +
+        'Ustunlar: savol | turi | javob | savol matni (ixtiyoriy)\n\n' +
+        '📊 Excel orqali ham yuklash mumkin — namuna: /namuna',
         { parse_mode: 'Markdown' },
       );
     }

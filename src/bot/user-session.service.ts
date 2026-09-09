@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Lang } from './i18n';
 
 export enum UserState {
   IDLE = 'IDLE',
@@ -22,6 +23,8 @@ export interface UserSession {
   fullName?: string;
   /** The sessionId the student has joined (cleared after test ends) */
   joinedSessionId?: string;
+  /** Yordam matnlari tili; tanlanmagan bo'lsa Telegram profilidan olinadi */
+  lang?: Lang;
 }
 
 export interface KnownUser {
@@ -59,13 +62,14 @@ export class UserSessionService {
     this.patch(userId, { state });
   }
 
-  /** Clears only the bot-flow state, keeps fullName and joinedSessionId */
+  /** Clears only the bot-flow state, keeps fullName, joinedSessionId and lang */
   resetState(userId: number): void {
     const current = this.get(userId);
     this.store.set(userId, {
       state: UserState.IDLE,
       fullName: current.fullName,
       joinedSessionId: current.joinedSessionId,
+      lang: current.lang,
     });
   }
 
@@ -75,6 +79,20 @@ export class UserSessionService {
 
   reset(userId: number): void {
     this.store.set(userId, { state: UserState.IDLE });
+  }
+
+  // ─── Til ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Tanlangan til. Xotirada saqlanadi — bot qayta ishga tushsa, til
+   * yana Telegram profilidan aniqlanadi.
+   */
+  setLang(userId: number, lang: Lang): void {
+    this.patch(userId, { lang });
+  }
+
+  getLang(userId: number): Lang | undefined {
+    return this.get(userId).lang;
   }
 
   // ─── User registry (for @username → ID resolution) ────────────────────────────

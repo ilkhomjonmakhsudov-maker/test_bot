@@ -7,6 +7,7 @@ import {
   ScoringRule,
   StudentResult,
   QuestionKey,
+  QuestionType,
   SessionStatus,
   ManualGrade,
   Verdict,
@@ -92,36 +93,184 @@ export class TestSessionService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Telegram matni orqali kalit: "1-A 2-B 3-C" — faqat variantli savollar.
-   * Ochiq savollar uchun Excel yuklash kerak (setQuestions).
+   * Telegram matni orqali kalit. Ikki yozuv aralash ishlatilishi mumkin:
+   *   "1-A 2-B"                          — qisqa yozuv, faqat variantli savollar
+   *   "1 | ochiq | 18/60 | Savol matni"  — ustunli yozuv, ochiq savollar ham
+   *
+   * Ustunli yozuvda har bir savol alohida qatorda bo'ladi va ustunlar Excel
+   * kaliti bilan bir xil: savol | turi | javob | savol matni (ixtiyoriy).
    */
   setAnswers(teacherId: number, raw: string): Record<number, QuestionKey> {
     const session = this.requireSession(teacherId);
     this.assertEditable(session);
 
+    const list = this.parseKeyText(raw);
     const questions: Record<number, QuestionKey> = {};
-    for (const pair of raw.trim().split(/[\s|]+/).filter(Boolean)) {
-      const match = pair.match(/^(\d+)\s*[-–—]\s*([A-Ea-e])$/);
-      if (!match) {
-        throw new Error(
-          `Noto'g'ri format: "${pair}".\n\n` +
-          `Matn orqali faqat variantli savollar kiritiladi: 1-A 2-B 3-C (A–E).\n` +
-          `Ochiq javobli savollar uchun Excel yuklang — namuna uchun /namuna buyrug'ini yuboring.`,
-        );
-      }
-      const number = parseInt(match[1], 10);
-      questions[number] = { number, type: 'variant', answer: match[2].toUpperCase() };
-    }
-
-    if (Object.keys(questions).length === 0) {
-      throw new Error("Hech qanday javob topilmadi. Misol: 1-A 2-B 3-C");
-    }
+    for (const q of list) questions[q.number] = q;
 
     session.questions = questions;
     this.regradeAll(session);
     this.persistSession(session);
-    this.logger.log(`${session.sessionId} — ${Object.keys(questions).length} ta javob belgilandi (matn).`);
+    this.logger.log(
+      `${session.sessionId} — ${list.length} ta javob belgilandi (matn, ` +
+      `${list.filter((q) => q.type === 'open').length} ta ochiq).`,
+    );
     return questions;
+  }
+
+  /**
+   * Kalit matnini o'qiydi. Matn avval qatorlarga bo'linadi — har bir qator
+   * alohida o'qiladi, shu sababli javob keyingi qatorga "yopishib" ketmaydi.
+   *
+   * Har bir qator ikki xil bo'lishi mumkin:
+   *   "1 | ochiq | 18/60 | Savol matni"  — ustunli yozuv (Excel bilan bir xil)
+   *   "1-A 2-B" yoki "1-A | 2-B"          — qisqa yozuv, bir nechta javob
+   *
+   * Ustunli yozuv deb faqat qator savol raqami bilan boshlangan va ikkinchi
+   * ustun tanilgan tur so'zi (yoki bo'sh) bo'lganda hisoblanadi — aks holda
+   * "|" oddiy ajratgich deb qaraladi.
+   */
+  private parseKeyText(raw: string): QuestionKey[] {
+    const text = raw.trim();
+    if (!text) throw new Error('Javoblar yozilmagan. Misol: `1-A 2-B 3-C`');
+
+    const questions = new Map<number, QuestionKey>();
+
+    const add = (question: QuestionKey) => {
+      if (questions.has(question.number)) {
+        throw new Error(
+          `${question.number}-savol ikki marta yozilgan. Har bir savolni bir marta yozing.`,
+        );
+      }
+      questions.set(question.number, question);
+    };
+
+    for (const line of text.split(/[\r\n]+/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      const columns = this.parseKeyColumns(trimmed);
+      if (columns) {
+        add(columns);
+        continue;
+      }
+
+      // Ustunli yozuv emas — "|" va bo'shliq oddiy ajratgich
+      for (const pair of trimmed.split(/[\s|]+/).filter(Boolean)) {
+        const shorthand = pair.match(/^(\d+)\s*[-–—.):]\s*([A-Ea-e])$/);
+        if (!shorthand) {
+          throw new Error(
+            `Noto'g'ri format: "${pair}".\n\n` +
+            `Ikki xil yozuv qabul qilinadi:\n` +
+            `• Variantli savol: \`1-A 2-B 3-C\`\n` +
+            `• Ustunli (har bir savol alohida qatorda):\n` +
+            `  \`1 | ochiq | 18/60 | Savol matni\`\n\n` +
+            `Ikkalasini aralashtirib yozsa ham bo'ladi.`,
+          );
+        }
+        add({
+          number: parseInt(shorthand[1], 10),
+          type: 'variant',
+          answer: shorthand[2].toUpperCase(),
+        });
+      }
+    }
+
+    if (questions.size === 0) {
+      throw new Error(
+        `Hech qanday javob topilmadi.\n\n` +
+        `Misol: \`1-A 2-B 3-C\`  yoki  \`1 | ochiq | 18/60\``,
+      );
+    }
+
+    return [...questions.values()].sort((a, b) => a.number - b.number);
+  }
+
+  /**
+   * Bitta qatorni ustunli yozuv sifatida o'qiydi:
+   *   "N | turi | javob"  yoki  "N | turi | javob | savol matni"
+   * Qator bu yozuvga mos kelmasa null qaytaradi (qisqa yozuv deb o'qiladi).
+   */
+  private parseKeyColumns(line: string): QuestionKey | null {
+    // Qator savol raqami bilan boshlanib, keyin "|" kelishi shart
+    const head = line.match(/^(\d+)\s*[-–—.):]?\s*\|/);
+    if (!head) return null;
+
+    const fields = line
+      .slice(head[0].length)
+      .split('|')
+      .map((f) => f.trim());
+
+    // Oxiridagi bo'sh maydonni tashlaymiz ("1-|ochiq|8/20|" — yopuvchi quvur)
+    while (fields.length > 3 && fields[fields.length - 1] === '') fields.pop();
+
+    // Kamida "turi" va "javob" bo'lishi kerak
+    if (fields.length < 2) return null;
+
+    const number = parseInt(head[1], 10);
+    const typeField = fields[0];
+    const answer = fields[1];
+    const questionText = fields[2] || undefined;
+
+    // "1-A | 2-B" — ikkinchi maydon keyingi savol markeri: bu qisqa yozuv
+    if (/^\d+\s*[-–—.):]/.test(answer)) return null;
+
+    // Tur so'zi tanilmasa, bu ustunli yozuv emas ("1|A|2|B" kabi holatlar)
+    const type = TestSessionService.parseQuestionType(typeField, answer);
+    if (type === null) {
+      if (!answer) return null;
+      throw new Error(
+        `${number}-savolning turi tushunilmadi: "${typeField}".\n\n` +
+        `\`variant\` yoki \`ochiq\` deb yozing. Bo'sh qoldirsangiz ` +
+        `bot javobga qarab o'zi aniqlaydi: \`${number} || ${answer}\``,
+      );
+    }
+
+    if (!answer) {
+      throw new Error(
+        `${number}-savolning javobi yozilmagan.\n\n` +
+        `To'g'ri: \`${number} | ochiq | 8/20\``,
+      );
+    }
+
+    if (fields.length > 3) {
+      throw new Error(
+        `${number}-savol qatorida ustun ko'p.\n\n` +
+        `Ustunlar: \`savol | turi | javob | savol matni\` (oxirgisi ixtiyoriy).`,
+      );
+    }
+
+    if (type === 'variant' && !/^[A-Ea-e]$/.test(answer)) {
+      throw new Error(
+        `${number}-savol "variant" turida, lekin javobi "${answer}".\n\n` +
+        `Variantli savolda javob A–E harflaridan biri bo'lishi kerak, ` +
+        `yoki turini \`ochiq\` deb belgilang: \`${number} | ochiq | ${answer}\``,
+      );
+    }
+
+    return {
+      number,
+      type,
+      answer: type === 'variant' ? answer.toUpperCase() : answer,
+      text: questionText,
+    };
+  }
+
+  /**
+   * Savol turini aniqlaydi. Bo'sh bo'lsa javobning shaklidan taxmin qiladi.
+   * null — so'z tanib bo'lmadi (chaqiruvchi o'zi hal qiladi).
+   */
+  static parseQuestionType(raw: string, answer: string): QuestionType | null {
+    const value = raw.trim().toLowerCase();
+    if (!value) return TestSessionService.inferQuestionType(answer);
+    if (/ochiq|open|matn|erkin|yozma|free|text/.test(value)) return 'open';
+    if (/variant|test|tanlov|yopiq|closed|choice|abcd/.test(value)) return 'variant';
+    return null;
+  }
+
+  /** Javobning shakliga qarab tur: bitta harf — variantli, boshqasi — ochiq */
+  static inferQuestionType(answer: string): QuestionType {
+    return /^[A-Ea-e]$/.test(answer.trim()) ? 'variant' : 'open';
   }
 
   /** Excel orqali kalit: variantli va ochiq savollar aralash bo'lishi mumkin. */

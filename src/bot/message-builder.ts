@@ -106,10 +106,17 @@ export class MessageBuilder {
       `/davom — Topshirishni qayta ochish\n` +
       `/natijalarni\\_yubor — Natijalarni talabalarga yuborib, testni yopish\n` +
       `/holat — Joriy sessiya ma'lumotlari\n` +
-      `/bekor — Joriy amalni bekor qilish\n\n` +
+      `/bekor — Joriy amalni bekor qilish\n` +
+      `/kalit\\_format — Kalit formatlari \\(uz / ru / en\\)\n` +
+      `/til — Yordam matnlari tilini tanlash\n\n` +
       `*Kalitni ikki xil kiritish mumkin:*\n` +
-      `1\\. Matn: \`/javoblar 1\\-A 2\\-B 3\\-C\` — faqat variantli savollar\n` +
-      `2\\. Excel fayl: savol \\| turi \\(variant/ochiq\\) \\| to'g'ri javob\n` +
+      `1\\. Matn orqali \\(variantli va ochiq savollar\\):\n` +
+      `   Qisqa: \`/javoblar 1\\-A 2\\-B 3\\-C\`\n` +
+      `   Ustunli — har bir savol alohida qatorda:\n` +
+      `   \`1 \\| variant \\| A\`\n` +
+      `   \`2 \\| ochiq \\| 18/60 \\| Savol matni\`\n` +
+      `   Ustunlar: savol \\| turi \\| javob \\| savol matni \\(ixtiyoriy\\)\n` +
+      `2\\. Excel fayl: xuddi shu ustunlar bilan\n` +
       `   Ochiq javob misoli: \`18/60\`, \`20x\`\n\n` +
       `*Test qanday yakunlanadi:*\n` +
       `1\\. /yakunla — talabalar javob topshira olmaydi, sizga Excel keladi\n` +
@@ -132,6 +139,8 @@ export class MessageBuilder {
       `\`/qoshil ${session.sessionId}\`\n\n` +
       `*Keyingi qadam — kalitni kiriting:*\n` +
       `• Matn orqali: \`/javoblar 1\\-A 2\\-B 3\\-C\`\n` +
+      `• Ochiq savol ham bo'lsa, har birini alohida qatorda yozing:\n` +
+      `  \`2 \\| ochiq \\| 18/60 \\| Savol matni\`\n` +
       `• Excel orqali: faylni shu chatga yuboring \\(namuna: /namuna\\)`
     );
   }
@@ -529,7 +538,9 @@ export class MessageBuilder {
       `  Misol: \`3\\-18/60 4\\-20x\`\n\n` +
       `*Javob ichida bo'shliq bo'lsa* — javoblarni \`\\|\` bilan ajrating:\n` +
       `\`1\\-A \\| 2\\-C \\| 3\\-18 / 60\`\n` +
-      `yoki har bir javobni yangi qatorga yozing\\.`
+      `yoki har bir javobni yangi qatorga yozing\\.\n\n` +
+      `/javob\\_format — barcha formatlar \\(uz / ru / en\\)\n` +
+      `/til — tilni tanlash`
     );
   }
 
@@ -607,6 +618,6 @@ function grade(percentage: number): string {
 }
 
 /** Telegram MarkdownV2 uchun maxsus belgilarni ekranlaydi */
-function escMd(text: string): string {
+export function escMd(text: string): string {
   return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
 }
